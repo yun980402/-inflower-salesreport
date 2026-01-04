@@ -1,0 +1,244 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  collection 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+
+// --- Firebase 配置 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'flower-sales-2026';
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [data, setData] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const months = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+  const fields = ["ue-count", "ue-order", "ue-received", "store-count", "store-cash", "store-linepay"];
+
+  // 1. 初始化身份驗證
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 監聽雲端資料
+  useEffect(() => {
+    if (!user) return;
+
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'sales_data', '2026');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setData(docSnap.data());
+      }
+      setLoading(false);
+    }, (error) => {
+      console.error("Firestore Listen Error:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 3. 處理數值輸入與儲存
+  const handleInputChange = async (monthIdx, type, value) => {
+    if (!user) return;
+    
+    const numValue = parseFloat(value) || 0;
+    const newData = {
+      ...data,
+      [`${monthIdx}-${type}`]: numValue
+    };
+    
+    setData(newData); // 立即更新 UI
+    setSaving(true);
+
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'sales_data', '2026');
+      await setDoc(docRef, newData, { merge: true });
+      setTimeout(() => setSaving(false), 500); // 延遲關閉儲存狀態增加回饋感
+    } catch (error) {
+      console.error("Save Error:", error);
+      setSaving(false);
+    }
+  };
+
+  // 4. 計算邏輯
+  const calculateStats = () => {
+    const monthlyResults = months.map((_, i) => {
+      const ueReceived = data[`${i}-ue-received`] || 0;
+      const cash = data[`${i}-store-cash`] || 0;
+      const lp = data[`${i}-store-linepay`] || 0;
+      const storeSubtotal = cash + lp;
+      return {
+        storeSubtotal,
+        monthTotal: ueReceived + storeSubtotal
+      };
+    });
+
+    const yearlyTotal = {
+      ueCount: 0, ueOrder: 0, ueReceived: 0,
+      storeCount: 0, storeCash: 0, storeLinepay: 0,
+      storeSubtotal: 0, grand: 0
+    };
+
+    months.forEach((_, i) => {
+      yearlyTotal.ueCount += (data[`${i}-ue-count`] || 0);
+      yearlyTotal.ueOrder += (data[`${i}-ue-order`] || 0);
+      yearlyTotal.ueReceived += (data[`${i}-ue-received`] || 0);
+      yearlyTotal.storeCount += (data[`${i}-store-count`] || 0);
+      yearlyTotal.storeCash += (data[`${i}-store-cash`] || 0);
+      yearlyTotal.storeLinepay += (data[`${i}-store-linepay`] || 0);
+      yearlyTotal.storeSubtotal += monthlyResults[i].storeSubtotal;
+      yearlyTotal.grand += monthlyResults[i].monthTotal;
+    });
+
+    return { monthlyResults, yearlyTotal };
+  };
+
+  const { monthlyResults, yearlyTotal } = calculateStats();
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-pink-50 text-pink-400">
+        <div className="animate-spin text-5xl mb-4">🌸</div>
+        <p className="font-bold animate-pulse">正在開啟您的雲端花園記帳本...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#fff5f5] p-2 md:p-6 font-sans">
+      <div className="max-w-7xl mx-auto bg-white/80 backdrop-blur-md rounded-[30px] shadow-2xl overflow-hidden border-2 border-pink-100">
+        
+        {/* Header */}
+        <div className="bg-[#ffafcc] p-6 text-white flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl bg-white p-2 rounded-full shadow-md">🌸</span>
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-wider" style={{ fontFamily: '"Noto Sans TC", sans-serif' }}>
+                +in flower 2026 雲端銷售表
+              </h1>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">ID: {user?.uid.slice(0, 8)}...</span>
+                <span className="text-xs text-pink-50 font-medium">✨ 資料已加密同步至雲端 ✨</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {saving ? (
+              <span className="text-sm bg-white/20 px-4 py-1.5 rounded-full animate-pulse">✨ 儲存中...</span>
+            ) : (
+              <span className="text-sm bg-green-400/30 px-4 py-1.5 rounded-full">✅ 已儲存</span>
+            )}
+            <button onClick={() => window.print()} className="bg-white/30 hover:bg-white/40 px-5 py-1.5 rounded-full text-sm font-bold transition">
+              🖨️ 列印
+            </button>
+          </div>
+        </div>
+
+        {/* Table Container */}
+        <div className="overflow-x-auto p-4">
+          <table className="w-full text-center border-separate border-spacing-y-2 min-w-[1100px]">
+            <thead>
+              <tr className="text-slate-400 text-sm">
+                <th className="p-2 w-20">月份</th>
+                <th colspan="3" className="p-2 bg-[#bde0fe] text-[#0077b6] rounded-t-2xl font-bold border-x-4 border-white">Uber Eats 🐝</th>
+                <th colspan="4" className="p-2 bg-[#cdb4db] text-[#5e548e] rounded-t-2xl font-bold border-x-4 border-white">店內現場 🏠</th>
+                <th className="p-2 bg-[#ffc8dd] text-[#fb6f92] rounded-t-2xl font-bold">總營收</th>
+              </tr>
+              <tr className="bg-white/50 text-xs font-bold text-slate-400">
+                <th></th>
+                <th className="p-2 border-l-4 border-white">訂單數</th>
+                <th className="p-2">訂單金額</th>
+                <th className="p-2 text-blue-500">實收金額</th>
+                
+                <th className="p-2 border-l-4 border-white">訂單數</th>
+                <th className="p-2">現金/轉帳</th>
+                <th className="p-2">Line Pay</th>
+                <th className="p-2 text-purple-600">店內小計</th>
+
+                <th className="p-2 border-l-4 border-white text-[#fb6f92]">UE + 店內</th>
+              </tr>
+            </thead>
+            <tbody>
+              {months.map((month, i) => (
+                <tr key={i} className="group hover:scale-[1.01] transition-transform duration-200">
+                  <td className="p-3 rounded-l-2xl bg-white font-bold text-pink-400 border-r-4 border-pink-50">{month}</td>
+                  
+                  {/* Uber Eats Inputs */}
+                  <td className="p-1"><input type="number" value={data[`${i}-ue-count`] || ''} onChange={(e) => handleInputChange(i, 'ue-count', e.target.value)} placeholder="0" className="w-full p-2 bg-white border-2 border-blue-50 rounded-xl text-center focus:border-blue-200 outline-none" /></td>
+                  <td className="p-1"><input type="number" value={data[`${i}-ue-order`] || ''} onChange={(e) => handleInputChange(i, 'ue-order', e.target.value)} placeholder="0" className="w-full p-2 bg-white border-2 border-blue-50 rounded-xl text-center focus:border-blue-200 outline-none" /></td>
+                  <td className="p-1"><input type="number" value={data[`${i}-ue-received`] || ''} onChange={(e) => handleInputChange(i, 'ue-received', e.target.value)} placeholder="0" className="w-full p-2 bg-blue-50/50 border-2 border-blue-100 rounded-xl text-center font-bold text-blue-600 outline-none" /></td>
+                  
+                  {/* Store Inputs */}
+                  <td className="p-1 border-l-4 border-white"><input type="number" value={data[`${i}-store-count`] || ''} onChange={(e) => handleInputChange(i, 'store-count', e.target.value)} placeholder="0" className="w-full p-2 bg-white border-2 border-purple-50 rounded-xl text-center focus:border-purple-200 outline-none" /></td>
+                  <td className="p-1"><input type="number" value={data[`${i}-store-cash`] || ''} onChange={(e) => handleInputChange(i, 'store-cash', e.target.value)} placeholder="0" className="w-full p-2 bg-white border-2 border-purple-50 rounded-xl text-center focus:border-purple-200 outline-none" /></td>
+                  <td className="p-1"><input type="number" value={data[`${i}-store-linepay`] || ''} onChange={(e) => handleInputChange(i, 'store-linepay', e.target.value)} placeholder="0" className="w-full p-2 bg-white border-2 border-purple-50 rounded-xl text-center focus:border-purple-200 outline-none" /></td>
+                  <td className="p-1 font-bold text-purple-700 bg-purple-50 rounded-xl text-sm flex items-center justify-center h-10 mt-1">{monthlyResults[i].storeSubtotal.toLocaleString()}</td>
+
+                  {/* Monthly Total */}
+                  <td className="p-1 rounded-r-2xl bg-pink-50 font-bold text-[#fb6f92] text-lg shadow-inner">{monthlyResults[i].monthTotal.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-[#a2d2ff] text-white font-bold text-lg shadow-xl">
+                <td className="p-5 rounded-l-[25px]">年度總計</td>
+                <td className="p-3 border-l-2 border-white/20">{yearlyTotal.ueCount.toLocaleString()}</td>
+                <td className="p-3">{yearlyTotal.ueOrder.toLocaleString()}</td>
+                <td className="p-3 text-blue-100">{yearlyTotal.ueReceived.toLocaleString()}</td>
+                
+                <td className="p-3 border-l-2 border-white/20">{yearlyTotal.storeCount.toLocaleString()}</td>
+                <td className="p-3">{yearlyTotal.storeCash.toLocaleString()}</td>
+                <td className="p-3">{yearlyTotal.storeLinepay.toLocaleString()}</td>
+                <td className="p-3 text-purple-100">{yearlyTotal.storeSubtotal.toLocaleString()}</td>
+
+                <td className="p-5 rounded-r-[25px] bg-[#ffafcc] text-2xl drop-shadow-md">{yearlyTotal.grand.toLocaleString()}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div className="p-6 flex justify-between items-center text-[#b5838d] text-xs">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-green-400 rounded-full animate-ping"></div>
+            <span>雲端資料同步中 - 建議使用 Safari/Chrome 並加入主畫面</span>
+          </div>
+          <span className="italic">🌷 Everyday is a blooming day with +in flower.</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
+
